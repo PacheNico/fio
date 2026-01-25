@@ -121,6 +121,43 @@ static void free_mem_shm(struct thread_data *td)
 #endif
 }
 
+static void *mmap_delay_thread(void *data)
+{
+	struct thread_data *td = data;
+	struct timespec req;
+	int ret;
+
+	/*
+	 * We need to wait for the delay to pass. We can't use usleep()
+	 * or similar, as we need to be able to wake up and exit if
+	 * the job is terminated.
+	 */
+	clock_gettime(CLOCK_REALTIME, &req);
+	req.tv_sec += td->o.hugepage_delay / 1000;
+	req.tv_nsec += (td->o.hugepage_delay % 1000) * 1000000;
+	if (req.tv_nsec >= 1000000000) {
+		req.tv_sec++;
+		req.tv_nsec -= 1000000000;
+	}
+
+	pthread_mutex_lock(&td->mmap_lock);
+	while (!td->mmap_thread_exit) {
+		ret = pthread_cond_timedwait(&td->mmap_cond, &td->mmap_lock, &req);
+		if (ret == ETIMEDOUT)
+			break;
+	}
+
+	if (!td->mmap_thread_exit) {
+		dprint(FD_MEM, "fio: madvising hugepage\n");
+		ret = madvise(td->orig_buffer, td->mmap_size, MADV_HUGEPAGE);
+		if (ret < 0)
+			log_err("fio: madvise hugepage failed: %d\n", errno);
+	}
+	pthread_mutex_unlock(&td->mmap_lock);
+
+	return NULL;
+}
+
 static int alloc_mem_mmap(struct thread_data *td, size_t total_mem)
 {
 	int flags = 0;
@@ -178,11 +215,36 @@ static int alloc_mem_mmap(struct thread_data *td, size_t total_mem)
 		return 1;
 	}
 
+	if (td->o.hugepage_delay) {
+		td->mmap_size = total_mem;
+		madvise(td->orig_buffer, td->mmap_size, MADV_NOHUGEPAGE);
+
+		pthread_mutex_init(&td->mmap_lock, NULL);
+		pthread_cond_init(&td->mmap_cond, NULL);
+		td->mmap_thread_exit = 0;
+		if (pthread_create(&td->mmap_thread, NULL, mmap_delay_thread, td)) {
+			log_err("fio: failed to create mmap delay thread\n");
+			pthread_cond_destroy(&td->mmap_cond);
+			pthread_mutex_destroy(&td->mmap_lock);
+		}
+	}
+
 	return 0;
 }
 
 static void free_mem_mmap(struct thread_data *td, size_t total_mem)
 {
+	if (td->o.hugepage_delay && td->mmap_size) {
+		pthread_mutex_lock(&td->mmap_lock);
+		td->mmap_thread_exit = 1;
+		pthread_cond_signal(&td->mmap_cond);
+		pthread_mutex_unlock(&td->mmap_lock);
+		pthread_join(td->mmap_thread, NULL);
+		pthread_cond_destroy(&td->mmap_cond);
+		pthread_mutex_destroy(&td->mmap_lock);
+		td->mmap_size = 0;
+	}
+
 	dprint(FD_MEM, "munmap %llu %p\n", (unsigned long long) total_mem,
 						td->orig_buffer);
 	munmap(td->orig_buffer, td->orig_buffer_size);

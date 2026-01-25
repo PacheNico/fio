@@ -265,6 +265,12 @@ struct thread_data {
 
 	int mmapfd;
 
+	pthread_t mmap_thread;
+	pthread_mutex_t mmap_lock;
+	pthread_cond_t mmap_cond;
+	int mmap_thread_exit;
+	size_t mmap_size;
+
 	void *iolog_buf;
 	FILE *iolog_f;
 
