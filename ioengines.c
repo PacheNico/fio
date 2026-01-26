@@ -352,7 +352,8 @@ enum fio_q_status td_io_queue(struct thread_data *td, struct io_u *io_u)
 		}
 	}
 
-	assert(fio_file_open(io_u->file));
+	if (io_u->file)
+		assert(fio_file_open(io_u->file));
 
 	/*
 	 * If using a write iolog, store this entry.

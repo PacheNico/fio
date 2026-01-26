@@ -5,7 +5,7 @@
 #include <unistd.h>
 #include <sys/mman.h>
 #include <sys/stat.h>
-
+#include <sys/mman.h>
 #include "fio.h"
 #ifndef FIO_NO_HAVE_SHM_H
 #include <sys/shm.h>
@@ -201,6 +201,7 @@ static int alloc_mem_mmap(struct thread_data *td, size_t total_mem)
 
 	td->orig_buffer = mmap(NULL, total_mem, PROT_READ | PROT_WRITE, flags,
 				td->mmapfd, 0);
+	td->mmap_size = total_mem;
 	dprint(FD_MEM, "mmap %llu/%d %p\n", (unsigned long long) total_mem,
 						td->mmapfd, td->orig_buffer);
 	if (td->orig_buffer == MAP_FAILED) {
@@ -214,9 +215,18 @@ static int alloc_mem_mmap(struct thread_data *td, size_t total_mem)
 
 		return 1;
 	}
+	if (strcmp(td->o.ioengine, "page_fault") == 0) {
+		int i;
+		struct fio_file *f;
+		for_each_file(td, f, i) {
+			f->real_file_size = total_mem;
+			f->io_size = total_mem;
+			f->file_offset = 0;
+		}
+	}
 
 	if (td->o.hugepage_delay) {
-		td->mmap_size = total_mem;
+		
 		madvise(td->orig_buffer, td->mmap_size, MADV_NOHUGEPAGE);
 
 		pthread_mutex_init(&td->mmap_lock, NULL);

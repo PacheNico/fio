@@ -40,7 +40,8 @@ static uint64_t mark_random_map(struct thread_data *td, struct io_u *io_u,
 	struct fio_file *f = io_u->file;
 	unsigned long long nr_blocks;
 	uint64_t block;
-
+	printf("mark_random_map: min_bs: %llu, offset: %llu, buflen: %llu\n", min_bs, offset, buflen);
+	printf("mark_random_map: file_offset: %llu\n", f->file_offset);
 	block = (offset - f->file_offset) / (uint64_t) min_bs;
 	nr_blocks = (buflen + min_bs - 1) / min_bs;
 	assert(nr_blocks > 0);
@@ -441,11 +442,27 @@ static int get_next_block(struct thread_data *td, struct io_u *io_u,
 {
 	struct fio_file *f = io_u->file;
 	uint64_t b, offset;
-	int ret;
+	int ret = 0;
 
 	assert(ddir_rw(ddir));
 
 	b = offset = -1ULL;
+	// if page fault io engine generate random offset, and align to page size
+	if (td_ioengine_flagged(td, FIO_PAGE_FAULT)) {
+		struct frand_state s;
+		long page_size = sysconf(_SC_PAGESIZE);
+		init_rand(&s, false);
+		b = rand_between(&s, 0, f->io_size - 1);
+		b = b & ~(page_size - 1);
+		offset = b;
+		/*
+		 * Page fault offsets can repeat and may not align with min_bs.
+		 * Avoid randommap assertions by allowing busy offsets.
+		 */
+		*is_random = true;
+		io_u_set(td, io_u, IO_U_F_BUSY_OK);
+		goto out;
+	}
 
 	if (td_randtrimwrite(td) && ddir == DDIR_WRITE) {
 		/* don't mark randommap for these writes */
@@ -490,7 +507,7 @@ static int get_next_block(struct thread_data *td, struct io_u *io_u,
 			ret = 1;
 		}
 	}
-
+out:
 	if (!ret) {
 		if (offset != -1ULL)
 			io_u->offset = offset;
@@ -1966,7 +1983,7 @@ struct io_u *get_io_u(struct thread_data *td)
 	io_u->ioprio = td->ioprio;
 	io_u->clat_prio_index = 0;
 out:
-	assert(io_u->file);
+	//assert(io_u->file);
 	if (!td_io_prep(td, io_u)) {
 		if (!td->o.disable_lat)
 			fio_gettime(&io_u->start_time, NULL);

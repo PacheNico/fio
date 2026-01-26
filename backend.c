@@ -1471,6 +1471,10 @@ int init_io_u_buffers(struct thread_data *td)
 	else
 		p = td->orig_buffer;
 
+	/* Dont prefill buffers for page fault engine */
+	if (td_ioengine_flagged(td, FIO_PAGE_FAULT))
+		return 0;
+
 	for (i = 0; i < max_units; i++) {
 		io_u = td->io_u_all.io_us[i];
 		dprint(FD_MEM, "io_u alloc %p, index %u\n", io_u, i);
@@ -1784,7 +1788,9 @@ static void *thread_main(void *data)
 	dprint(FD_MUTEX, "up startup_sem\n");
 	fio_sem_up(startup_sem);
 	dprint(FD_MUTEX, "wait on td->sem\n");
+	fprintf(stderr, "DEBUG: worker thread %d waiting on sem %p\n", (int)td->pid, td->sem);
 	fio_sem_down(td->sem);
+	fprintf(stderr, "DEBUG: worker thread %d done waiting on sem\n", (int)td->pid);
 	dprint(FD_MUTEX, "done waiting on td->sem\n");
 
 	/*
@@ -2688,7 +2694,9 @@ reap:
 			m_rate += ddir_rw_sum(td->o.ratemin);
 			t_rate += ddir_rw_sum(td->o.rate);
 			todo--;
+			fprintf(stderr, "DEBUG: main thread %d upping sem %p for td %p\n", getpid(), td->sem, td);
 			fio_sem_up(td->sem);
+			fprintf(stderr, "DEBUG: main thread %d upped sem\n", getpid());
 		} end_for_each();
 
 		reap_threads(&nr_running, &t_rate, &m_rate);

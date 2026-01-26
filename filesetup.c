@@ -1092,6 +1092,13 @@ int setup_files(struct thread_data *td)
 
 	old_state = td_bump_runstate(td, TD_SETTING_UP);
 
+	// if (td->io_ops && td->io_ops->setup && strcmp(td->io_ops->name, "page_fault") == 0) {
+	// 	err = td->io_ops->setup(td);
+	// 	if (err)
+	// 		goto err_out;
+	// 	goto done;
+	// }
+
 	for_each_file(td, f, i) {
 		if (!td_ioengine_flagged(td, FIO_DISKLESSIO) &&
 		    strchr(f->file_name, FIO_OS_PATH_SEPARATOR) &&
