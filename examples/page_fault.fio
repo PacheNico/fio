@@ -1,0 +1,23 @@
+[global]
+stonewall
+ioengine=page_fault
+size=3*1024*1024*$mb_memory/4 # 3/4 of the memory
+bs=$pagesize
+
+[page_fault_write]
+rw=write
+
+[page_fault_mixed]
+rw=randrw
+rwmixread=50
+
+[page_fault_process_storm]
+size=16*1024*$pagesize
+rw=randrw
+rwmixread=50
+numjobs=$ncpus
+
+[page_fault_mthp]
+bsrange=16k-1M
+blockalign=2M
+rw=write
