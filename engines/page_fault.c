@@ -1,21 +1,102 @@
 #include "ioengines.h"
 #include "fio.h"
+#include "optgroup.h"
+#include <errno.h>
+#include <pthread.h>
 #include <sys/mman.h>
+#include <time.h>
 
 struct fio_page_fault_data {
+	struct thread_data *td;
 	void *mmap_ptr;
 	size_t mmap_sz;
 	off_t mmap_off;
+#ifdef CONFIG_HAVE_THP
+	pthread_t mmap_thread;
+	pthread_mutex_t mmap_lock;
+	pthread_cond_t mmap_cond;
+	int mmap_thread_exit;
+	int mmap_thread_started;
+#endif
 };
+
+static size_t page_fault_pagesize(void)
+{
+	long ps = sysconf(_SC_PAGESIZE);
+
+	if (ps <= 0)
+		return 4096;
+
+	return (size_t)ps;
+}
+
+struct page_fault_options {
+	unsigned int hugepage_delay;
+};
+
+static struct fio_option page_fault_options[] = {
+	{
+		.name = "hugepage_delay",
+		.lname = "Hugepage delay",
+		.type = FIO_OPT_INT,
+		.off1 = offsetof(struct page_fault_options, hugepage_delay),
+		.help = "For mmap, map with MADV_NOHUGEPAGE then MADV_HUGEPAGE after delay (in ms)",
+		.def = "0",
+		.category = FIO_OPT_C_ENGINE,
+		.group = FIO_OPT_G_PAGE_FAULT,
+	},
+	{
+		.name = NULL,
+	},
+};
+
+#ifdef CONFIG_HAVE_THP
+static void *mmap_delay_thread(void *data)
+{
+	struct fio_page_fault_data *fpd = data;
+	struct thread_data *td = fpd->td;
+	struct page_fault_options *o = td->eo;
+	struct timespec req;
+	int ret;
+
+	clock_gettime(CLOCK_REALTIME, &req);
+	req.tv_sec += o->hugepage_delay / 1000;
+	req.tv_nsec += (o->hugepage_delay % 1000) * 1000000;
+	if (req.tv_nsec >= 1000000000) {
+		req.tv_sec++;
+		req.tv_nsec -= 1000000000;
+	}
+
+	pthread_mutex_lock(&fpd->mmap_lock);
+	while (!fpd->mmap_thread_exit) {
+		ret = pthread_cond_timedwait(&fpd->mmap_cond, &fpd->mmap_lock,
+					     &req);
+		if (ret == ETIMEDOUT)
+			break;
+	}
+
+	if (!fpd->mmap_thread_exit) {
+		dprint(FD_MEM, "fio: madvising hugepage\n");
+		ret = madvise(fpd->mmap_ptr, fpd->mmap_sz, MADV_HUGEPAGE);
+		if (ret < 0)
+			log_err("fio: madvise hugepage failed: %d\n", errno);
+	}
+	pthread_mutex_unlock(&fpd->mmap_lock);
+
+	return NULL;
+}
+#endif
 
 static int fio_page_fault_init(struct thread_data *td)
 {
 	size_t total_io_size;
+	struct page_fault_options *o = td->eo;
 	struct fio_page_fault_data *fpd = calloc(1, sizeof(*fpd));
 	if (!fpd)
 		return 1;
 
 	total_io_size = td->o.size;
+	fpd->td = td;
 	fpd->mmap_sz = total_io_size;
 	fpd->mmap_off = 0;
 	fpd->mmap_ptr = mmap(NULL, total_io_size, PROT_READ | PROT_WRITE,
@@ -23,6 +104,25 @@ static int fio_page_fault_init(struct thread_data *td)
 	if (fpd->mmap_ptr == MAP_FAILED) {
 		free(fpd);
 		return 1;
+	}
+
+	if (o->hugepage_delay) {
+#ifdef CONFIG_HAVE_THP
+		madvise(fpd->mmap_ptr, fpd->mmap_sz, MADV_NOHUGEPAGE);
+
+		pthread_mutex_init(&fpd->mmap_lock, NULL);
+		pthread_cond_init(&fpd->mmap_cond, NULL);
+		fpd->mmap_thread_exit = 0;
+		if (pthread_create(&fpd->mmap_thread, NULL, mmap_delay_thread,
+				   fpd)) {
+			log_err("fio: failed to create mmap delay thread\n");
+			pthread_cond_destroy(&fpd->mmap_cond);
+			pthread_mutex_destroy(&fpd->mmap_lock);
+			fpd->mmap_thread_started = 0;
+		} else {
+			fpd->mmap_thread_started = 1;
+		}
+#endif
 	}
 
 	FILE_SET_ENG_DATA(td->files[0], fpd);
@@ -74,11 +174,26 @@ static int fio_page_fault_open_file(struct thread_data *td, struct fio_file *f)
 static int fio_page_fault_close_file(struct thread_data *td, struct fio_file *f)
 {
 	struct fio_page_fault_data *fpd = FILE_ENG_DATA(f);
-	if (!fpd)
-		return 1;
-	if (fpd->mmap_ptr && fpd->mmap_sz)
-		munmap(fpd->mmap_ptr, fpd->mmap_sz);
-	free(fpd);
+
+	if (fpd) {
+#ifdef CONFIG_HAVE_THP
+		if (fpd->mmap_thread_started) {
+			pthread_mutex_lock(&fpd->mmap_lock);
+			fpd->mmap_thread_exit = 1;
+			pthread_cond_signal(&fpd->mmap_cond);
+			pthread_mutex_unlock(&fpd->mmap_lock);
+			pthread_join(fpd->mmap_thread, NULL);
+			pthread_cond_destroy(&fpd->mmap_cond);
+			pthread_mutex_destroy(&fpd->mmap_lock);
+			fpd->mmap_thread_started = 0;
+		}
+#endif
+
+		if (fpd->mmap_ptr && fpd->mmap_sz)
+			munmap(fpd->mmap_ptr, fpd->mmap_sz);
+		free(fpd);
+	}
+
 	return 0;
 }
 
@@ -92,6 +207,8 @@ static struct ioengine_ops ioengine = {
 	.close_file = fio_page_fault_close_file,
 	.get_file_size = generic_get_file_size,
 	.flags = FIO_SYNCIO | FIO_NOEXTEND | FIO_DISKLESSIO,
+	.options = page_fault_options,
+	.option_struct_size = sizeof(struct page_fault_options),
 };
 
 static void fio_init fio_page_fault_register(void)
