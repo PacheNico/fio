@@ -3,8 +3,10 @@
 #include "optgroup.h"
 #include <errno.h>
 #include <pthread.h>
+#include <stdint.h>
 #include <sys/mman.h>
 #include <time.h>
+#include <unistd.h>
 
 struct fio_page_fault_data {
 	struct thread_data *td;
@@ -49,6 +51,40 @@ static struct fio_option page_fault_options[] = {
 		.name = NULL,
 	},
 };
+
+static int page_fault_trim(struct fio_page_fault_data *fpd, void *ptr,
+			   size_t len)
+{
+	size_t ps = page_fault_pagesize();
+	uintptr_t base = (uintptr_t)fpd->mmap_ptr;
+	uintptr_t start = (uintptr_t)ptr;
+	uintptr_t end = start + len;
+	uintptr_t aligned_start;
+	uintptr_t aligned_end;
+
+	aligned_start = start & ~(ps - 1);
+	aligned_end = (end + ps - 1) & ~(ps - 1);
+
+	if (aligned_start < base)
+		aligned_start = base;
+	if (aligned_end > base + fpd->mmap_sz)
+		aligned_end = base + fpd->mmap_sz;
+	if (aligned_start >= aligned_end)
+		return 0;
+
+#ifdef MADV_DONTNEED
+	if (madvise((void *)aligned_start, aligned_end - aligned_start,
+		    MADV_DONTNEED) < 0) {
+		log_err("fio: madvise dontneed failed: %d\n", errno);
+		return 1;
+	}
+#else
+	log_err("fio: MADV_DONTNEED not supported\n");
+	return 1;
+#endif
+
+	return 0;
+}
 
 #ifdef CONFIG_HAVE_THP
 static void *mmap_delay_thread(void *data)
@@ -158,6 +194,10 @@ static enum fio_q_status fio_page_fault_queue(struct thread_data *td,
 			((unsigned char *)(mmap_head))[i] =
 				((unsigned char *)(io_u->xfer_buf))[i];
 		}
+		break;
+	case DDIR_TRIM:
+		if (page_fault_trim(fpd, mmap_head, io_u->buflen))
+			return 1;
 		break;
 	default:
 		return 1;
