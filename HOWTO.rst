@@ -2327,6 +2327,12 @@ I/O engine
 			several instances to access the same device or file
 			simultaneously, but allow it for threads.
 
+		**page_fault**
+			I/O engine that uses an mmap region to simulate data transfer by
+			allocating anonymous memory and copying data on read/write to
+			intentionally trigger page faults. This engine defines engine
+			specific options, see :option:`hugepage_delay` for more details.
+
 	File/directory operation engines define how the job operates file or directory. The
 	following types are defined:
 
@@ -3366,6 +3372,12 @@ with the caveat that when used on the command line, they must come after the
 .. option:: no_completion_thread : [windowsaio]
 
 	Avoid using a separate thread for completion polling.
+
+.. option:: hugepage_delay=int : [page_fault]
+
+	For :option:`page_fault`, initialize the mmap region with MADV_NOHUGEPAGE
+	then after :option:`hugepage_delay` milliseconds, MADV_HUGEPAGE the region.
+	Default is 0.
 
 I/O depth
 ~~~~~~~~~
