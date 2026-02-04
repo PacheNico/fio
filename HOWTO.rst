@@ -3379,6 +3379,18 @@ with the caveat that when used on the command line, they must come after the
 	then after :option:`hugepage_delay` milliseconds, MADV_HUGEPAGE the region.
 	Default is 0.
 
+.. option:: madvise_hint=str : [page_fault]
+
+	For :option:`page_fault`, advise the kernel on what I/O patterns are likely to be issued.
+	Accepted values are:
+
+		**none** (default)
+			No particular I/O pattern is expected.
+		**random**
+			Random I/O pattern is expected.
+		**sequential**
+			Sequential I/O pattern is expected.
+
 I/O depth
 ~~~~~~~~~
 
