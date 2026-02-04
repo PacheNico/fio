@@ -7,6 +7,7 @@
 #include <sys/mman.h>
 #include <time.h>
 #include <unistd.h>
+#include <string.h>
 
 struct fio_page_fault_data {
 	struct thread_data *td;
@@ -32,8 +33,16 @@ static size_t page_fault_pagesize(void)
 	return (size_t)ps;
 }
 
+enum madvise_hint {
+	MA_NONE = POSIX_MADV_NORMAL,
+	MA_RANDOM = POSIX_MADV_RANDOM,
+	MA_SEQUENTIAL = POSIX_MADV_SEQUENTIAL,
+};
+
 struct page_fault_options {
+	void *pad;
 	unsigned int hugepage_delay;
+	unsigned int madvise_hint;
 };
 
 static struct fio_option page_fault_options[] = {
@@ -46,6 +55,30 @@ static struct fio_option page_fault_options[] = {
 		.def = "0",
 		.category = FIO_OPT_C_ENGINE,
 		.group = FIO_OPT_G_PAGE_FAULT,
+	},
+	{
+		.name = "madvise_hint",
+		.lname = "Madvise hint",
+		.type = FIO_OPT_STR,
+		.off1 = offsetof(struct page_fault_options, madvise_hint),
+		.help = "Madvise hint",
+		.def = "none",
+		.category = FIO_OPT_C_ENGINE,
+		.group = FIO_OPT_G_PAGE_FAULT,
+		.posval = {
+			  { .ival = "none",
+			    .oval = MA_NONE,
+			    .help = "Madvise using MADV_NORMAL (default)",
+			  },
+			  { .ival = "random",
+			    .oval = MA_RANDOM,
+			    .help = "Madvise using MADV_RANDOM",
+			  },
+			  { .ival = "sequential",
+			    .oval = MA_SEQUENTIAL,
+			    .help = "Madvise using MADV_SEQUENTIAL",
+			  },
+		},
 	},
 	{
 		.name = NULL,
@@ -139,6 +172,11 @@ static int fio_page_fault_init(struct thread_data *td)
 			     MAP_PRIVATE | MAP_ANONYMOUS, -1, 0);
 	if (fpd->mmap_ptr == MAP_FAILED) {
 		free(fpd);
+		return 1;
+	}
+
+	if (madvise(fpd->mmap_ptr, fpd->mmap_sz, o->madvise_hint) < 0) {
+		log_err("fio: madvise failed: %d\n", errno);
 		return 1;
 	}
 
