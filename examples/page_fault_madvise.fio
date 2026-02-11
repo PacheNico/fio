@@ -1,0 +1,20 @@
+[global]
+ioengine=page_fault
+size=10G
+bs=4k
+rw=randwrite
+
+# Test MADV_NORMAL (default)
+[madvise_normal]
+stonewall
+madvise_hint=none
+
+# Test MADV_RANDOM
+[madvise_random]
+stonewall
+madvise_hint=random
+
+# Test MADV_SEQUENTIAL
+[madvise_sequential]
+stonewall
+madvise_hint=sequential

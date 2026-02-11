@@ -7,7 +7,7 @@ ioengine=page_fault
 size=64M
 rw=write
 bs=4k
-numjobs=250
+numjobs=20
 
 [page_fault]
 rw=write
