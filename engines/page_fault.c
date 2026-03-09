@@ -25,12 +25,14 @@ struct fio_page_fault_data {
 
 static size_t page_fault_pagesize(void)
 {
-	long ps = sysconf(_SC_PAGESIZE);
+	static size_t ps;
 
-	if (ps <= 0)
-		return 4096;
+	if (!ps) {
+		long ret = sysconf(_SC_PAGESIZE);
+		ps = (ret > 0) ? (size_t)ret : 4096;
+	}
 
-	return (size_t)ps;
+	return ps;
 }
 
 enum madvise_hint {
@@ -177,6 +179,8 @@ static int fio_page_fault_init(struct thread_data *td)
 
 	if (madvise(fpd->mmap_ptr, fpd->mmap_sz, o->madvise_hint) < 0) {
 		log_err("fio: madvise failed: %d\n", errno);
+		munmap(fpd->mmap_ptr, fpd->mmap_sz);
+		free(fpd);
 		return 1;
 	}
 
@@ -203,42 +207,38 @@ static int fio_page_fault_init(struct thread_data *td)
 	return 0;
 }
 
-static int fio_page_fault_prep(struct thread_data *td, struct io_u *io_u)
-{
-	return 0;
-}
-
 static enum fio_q_status fio_page_fault_queue(struct thread_data *td,
 					      struct io_u *io_u)
 {
 	void *mmap_head;
 	struct fio_page_fault_data *fpd = FILE_ENG_DATA(io_u->file);
-	if (!fpd)
-		return 1;
+	if (!fpd) {
+		io_u->error = EINVAL;
+		return FIO_Q_COMPLETED;
+	}
 
-	if (io_u->offset + io_u->buflen > fpd->mmap_sz)
-		return 1;
+	if (io_u->offset + io_u->buflen > fpd->mmap_sz) {
+		io_u->error = EINVAL;
+		return FIO_Q_COMPLETED;
+	}
 
 	mmap_head = fpd->mmap_ptr + io_u->offset;
 	switch (io_u->ddir) {
 	case DDIR_READ:
-		for (size_t i = 0; i < io_u->buflen; i++) {
-			((unsigned char *)(io_u->xfer_buf))[i] =
-				((unsigned char *)(mmap_head))[i];
-		}
+		memcpy(io_u->xfer_buf, mmap_head, io_u->buflen);
 		break;
 	case DDIR_WRITE:
-		for (size_t i = 0; i < io_u->buflen; i++) {
-			((unsigned char *)(mmap_head))[i] =
-				((unsigned char *)(io_u->xfer_buf))[i];
-		}
+		memcpy(mmap_head, io_u->xfer_buf, io_u->buflen);
 		break;
 	case DDIR_TRIM:
-		if (page_fault_trim(fpd, mmap_head, io_u->buflen))
-			return 1;
+		if (page_fault_trim(fpd, mmap_head, io_u->buflen)) {
+			io_u->error = EIO;
+			return FIO_Q_COMPLETED;
+		}
 		break;
 	default:
-		return 1;
+		io_u->error = EINVAL;
+		return FIO_Q_COMPLETED;
 	}
 
 	return FIO_Q_COMPLETED;
@@ -279,7 +279,6 @@ static struct ioengine_ops ioengine = {
 	.name = "page_fault",
 	.version = FIO_IOOPS_VERSION,
 	.init = fio_page_fault_init,
-	.prep = fio_page_fault_prep,
 	.queue = fio_page_fault_queue,
 	.open_file = fio_page_fault_open_file,
 	.close_file = fio_page_fault_close_file,
