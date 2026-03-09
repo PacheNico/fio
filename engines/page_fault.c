@@ -1,3 +1,9 @@
+/*
+ * page_fault engine
+ *
+ * IO engine that reads/writes directly to/from anonymous memory
+ * by triggering page faults.
+ */
 #include "ioengines.h"
 #include "fio.h"
 #include "optgroup.h"
