@@ -11,19 +11,24 @@
 struct fio_page_fault_data {
 	void *mmap_ptr;
 	size_t mmap_sz;
-	off_t mmap_off;
 };
 
 static int fio_page_fault_init(struct thread_data *td)
 {
 	size_t total_io_size;
-	struct fio_page_fault_data *fpd = calloc(1, sizeof(*fpd));
+	struct fio_page_fault_data *fpd;
+
+	if (td->o.nr_files > 1) {
+		log_err("page_fault engine does not support multiple files\n");
+		return 1;
+	}
+
+	fpd = calloc(1, sizeof(*fpd));
 	if (!fpd)
 		return 1;
 
 	total_io_size = td->o.size;
 	fpd->mmap_sz = total_io_size;
-	fpd->mmap_off = 0;
 	fpd->mmap_ptr = mmap(NULL, total_io_size, PROT_READ | PROT_WRITE,
 			     MAP_PRIVATE | MAP_ANONYMOUS, -1, 0);
 	if (fpd->mmap_ptr == MAP_FAILED) {
@@ -31,6 +36,7 @@ static int fio_page_fault_init(struct thread_data *td)
 		return 1;
 	}
 
+	td->io_ops_data = fpd;
 	FILE_SET_ENG_DATA(td->files[0], fpd);
 	return 0;
 }
@@ -58,6 +64,11 @@ static enum fio_q_status fio_page_fault_queue(struct thread_data *td,
 	case DDIR_WRITE:
 		memcpy(mmap_head, io_u->xfer_buf, io_u->buflen);
 		break;
+	case DDIR_SYNC:
+	case DDIR_DATASYNC:
+	case DDIR_SYNC_FILE_RANGE:
+	case DDIR_SYNCFS:
+		break;
 	default:
 		io_u->error = EINVAL;
 		break;
@@ -73,19 +84,25 @@ static int fio_page_fault_open_file(struct thread_data *td, struct fio_file *f)
 
 static int fio_page_fault_close_file(struct thread_data *td, struct fio_file *f)
 {
-	struct fio_page_fault_data *fpd = FILE_ENG_DATA(f);
+	return 0;
+}
+
+static void fio_page_fault_cleanup(struct thread_data *td)
+{
+	struct fio_page_fault_data *fpd = td->io_ops_data;
+
 	if (!fpd)
-		return 1;
+		return;
 	if (fpd->mmap_ptr && fpd->mmap_sz)
 		munmap(fpd->mmap_ptr, fpd->mmap_sz);
 	free(fpd);
-	return 0;
 }
 
 static struct ioengine_ops ioengine = {
 	.name = "page_fault",
 	.version = FIO_IOOPS_VERSION,
 	.init = fio_page_fault_init,
+	.cleanup = fio_page_fault_cleanup,
 	.queue = fio_page_fault_queue,
 	.open_file = fio_page_fault_open_file,
 	.close_file = fio_page_fault_close_file,

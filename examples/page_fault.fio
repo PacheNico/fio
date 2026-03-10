@@ -1,7 +1,7 @@
 [global]
 stonewall
 ioengine=page_fault
-size=3*1024*1024*$mb_memory/4 # 3/4 of the memory
+size=5*1024*1024*$mb_memory/8 # 5/8 of the memory
 bs=$pagesize
 
 [page_fault_write]
@@ -12,7 +12,7 @@ rw=randrw
 rwmixread=50
 
 [page_fault_process_storm]
-size=16*1024*$pagesize
+size=8*1024*$pagesize
 rw=randrw
 rwmixread=50
 numjobs=$ncpus
